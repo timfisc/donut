@@ -16,6 +16,7 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
 from pytorch_lightning.plugins import CheckpointIO
 from pytorch_lightning.utilities import rank_zero_only
@@ -61,18 +62,18 @@ def train(config):
     datasets = {"train": [], "validation": []}
     for i, dataset_name_or_path in enumerate(config.dataset_name_or_paths):
         task_name = os.path.basename(dataset_name_or_path)  # e.g., cord-v2, docvqa, rvlcdip, ...
-        
+
         # add categorical special tokens (optional)
         if task_name == "rvlcdip":
             model_module.model.decoder.add_special_tokens([
-                "<advertisement/>", "<budget/>", "<email/>", "<file_folder/>", 
-                "<form/>", "<handwritten/>", "<invoice/>", "<letter/>", 
-                "<memo/>", "<news_article/>", "<presentation/>", "<questionnaire/>", 
+                "<advertisement/>", "<budget/>", "<email/>", "<file_folder/>",
+                "<form/>", "<handwritten/>", "<invoice/>", "<letter/>",
+                "<memo/>", "<news_article/>", "<presentation/>", "<questionnaire/>",
                 "<resume/>", "<scientific_publication/>", "<scientific_report/>", "<specification/>"
             ])
         if task_name == "docvqa":
             model_module.model.decoder.add_special_tokens(["<yes/>", "<no/>"])
-            
+
         for split in ["train", "validation"]:
             datasets[split].append(
                 DonutDataset(
@@ -111,6 +112,8 @@ def train(config):
         mode="min",
     )
 
+    early_stopping_callback = EarlyStopping(monitor='val_metric', patience=30)
+
     custom_ckpt = CustomCheckpointIO()
     trainer = pl.Trainer(
         resume_from_checkpoint=config.get("resume_from_checkpoint_path", None),
@@ -127,7 +130,7 @@ def train(config):
         precision=16,
         num_sanity_val_steps=0,
         logger=logger,
-        callbacks=[lr_callback, checkpoint_callback],
+        callbacks=[lr_callback, checkpoint_callback, early_stopping_callback],
     )
 
     trainer.fit(model_module, data_module)
