@@ -134,6 +134,153 @@ class SwinEncoder(nn.Module):
         return self.to_tensor(ImageOps.expand(img, padding))
 
 
+class BARTCustomTokenizer(XLMRobertaTokenizer):
+    """
+    Customized XLMRobertaTokenizer to return confidence scores and token id groups aligned with grouped tokens
+    The default batch_decoder, decode and _decode are overwritten for the Tokenizer
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def batch_decode(
+        self,
+        sequences: Union[List[int], List[List[int]], "np.ndarray", "torch.Tensor"],
+        confidences: Union[List[float], List[List[float]], "np.ndarray"],
+        decoder_delim: str,
+        skip_special_tokens: bool = False,
+        clean_up_tokenization_spaces: bool = True,
+        **kwargs
+    ) -> List[str]:
+        """
+        Convert a list of lists of token ids into a list of strings by calling decode.
+        Args:
+            sequences (`Union[List[int], List[List[int]], np.ndarray, torch.Tensor, tf.Tensor]`):
+                List of tokenized input ids. Can be obtained using the `__call__` method.
+            confidences (`Union[List[float], List[List[float]], np.ndarray]`):
+                List of confidence scores for corresponding tokens in sequences list
+            decoder_delim ('str'):
+                delimiter for the decoded tokens, must q unique token that should not appear in text
+            skip_special_tokens (`bool`, *optional*, defaults to `False`):
+                Whether or not to remove special tokens in the decoding.
+            clean_up_tokenization_spaces (`bool`, *optional*, defaults to `True`):
+                Whether or not to clean up the tokenization spaces.
+            kwargs (additional keyword arguments, *optional*):
+                Will be passed to the underlying model specific decode method.
+        Returns:
+            `List[str]`: The list of decoded sentences.
+        """
+        self.DELIM = decoder_delim
+        return [
+            self.decode(
+                seq,
+                conf,
+                skip_special_tokens=skip_special_tokens,
+                clean_up_tokenization_spaces=clean_up_tokenization_spaces,
+                **kwargs,
+            )
+            for seq, conf in zip(sequences, confidences)
+        ]
+
+    def decode(
+        self,
+        token_ids: Union[int, List[int], "np.ndarray", "torch.Tensor"],
+        token_confs: Union[int, List[float], "np.ndarray"],
+        skip_special_tokens: bool = False,
+        clean_up_tokenization_spaces: bool = True,
+        **kwargs
+    ) -> str:
+        """
+        Converts a sequence of ids in a string, using the tokenizer and vocabulary with options to remove special
+        tokens and clean up tokenization spaces.
+        Similar to doing `self.convert_tokens_to_string(self.convert_ids_to_tokens(token_ids))`.
+        Args:
+            token_ids (`Union[int, List[int], np.ndarray, torch.Tensor, tf.Tensor]`):
+                List of tokenized input ids. Can be obtained using the `__call__` method.
+            token_confs (`Union[float, List[float], np.ndarray]`):
+                List of confidence scores for corresponding tokens
+            skip_special_tokens (`bool`, *optional*, defaults to `False`):
+                Whether or not to remove special tokens in the decoding.
+            clean_up_tokenization_spaces (`bool`, *optional*, defaults to `True`):
+                Whether or not to clean up the tokenization spaces.
+            kwargs (additional keyword arguments, *optional*):
+                Will be passed to the underlying model specific decode method.
+        Returns:
+            `str`: The decoded sentence.
+        """
+        # Convert inputs to python lists
+        token_ids = to_py_obj(token_ids)
+        token_confs = to_py_obj(token_confs)
+
+        return self._decode(
+            token_ids=token_ids,
+            token_confs=token_confs,
+            skip_special_tokens=skip_special_tokens,
+            clean_up_tokenization_spaces=clean_up_tokenization_spaces,
+            **kwargs,
+        )
+
+    def _decode(
+        self,
+        token_ids: List[int],
+        token_confs: List[float],
+        skip_special_tokens: bool = False,
+        clean_up_tokenization_spaces: bool = True,
+        spaces_between_special_tokens: bool = True,
+        **kwargs
+    ) -> str:
+        self._decode_use_source_tokenizer = kwargs.pop("use_source_tokenizer", False)
+
+        filtered_tokens = self.convert_ids_to_tokens(token_ids, skip_special_tokens=skip_special_tokens)
+
+        # To avoid mixing byte-level and unicode for byte-level BPT
+        # we need to build string separately for added tokens and byte-level tokens
+        # cf. https://github.com/huggingface/transformers/issues/1133
+        sub_texts = []
+        sub_confs = []
+        sub_idxs = []
+        current_sub_text = []
+        current_sub_confs = []
+        current_sub_idxs = []
+
+        for idx, (token, conf) in enumerate(zip(filtered_tokens, token_confs)):
+            if skip_special_tokens and token in self.all_special_ids:
+                continue
+            if token in self.added_tokens_encoder:
+                if current_sub_text:
+                    sub_texts.append(self.convert_tokens_to_string(current_sub_text))
+                    current_sub_text = []
+                    sub_confs.append(sum(current_sub_confs) / len(current_sub_confs))
+                    current_sub_confs = []
+                    sub_idxs.append(current_sub_idxs)
+                    current_sub_idxs = []
+                sub_texts.append(token)
+                sub_confs.append(conf)
+                sub_idxs.append([idx])
+            else:
+                current_sub_text.append(token)
+                current_sub_confs.append(conf)
+                current_sub_idxs.append(idx)
+
+        if current_sub_text:
+            sub_texts.append(self.convert_tokens_to_string(current_sub_text))
+            sub_confs.append(sum(current_sub_confs) / len(current_sub_confs))
+            sub_idxs.append(current_sub_idxs)
+
+        decoder_output_confs = sub_confs
+        decoder_output_indxs = sub_idxs
+        if spaces_between_special_tokens:
+            text = self.DELIM.join(sub_texts)
+        else:
+            text = "".join(sub_texts)
+
+        if clean_up_tokenization_spaces:
+            clean_text = self.clean_up_tokenization(text)
+            return clean_text, decoder_output_confs, decoder_output_indxs
+        else:
+            return text, decoder_output_confs, decoder_output_indxs
+
+
 class BARTDecoder(nn.Module):
     """
     Donut Decoder based on Multilingual BART
@@ -157,7 +304,7 @@ class BARTDecoder(nn.Module):
         self.decoder_layer = decoder_layer
         self.max_position_embeddings = max_position_embeddings
 
-        self.tokenizer = XLMRobertaTokenizer.from_pretrained(
+        self.tokenizer = BARTCustomTokenizer.from_pretrained(
             "hyunwoongko/asian-bart-ecjk" if not name_or_path else name_or_path
         )
 
@@ -173,7 +320,7 @@ class BARTDecoder(nn.Module):
                 add_final_layer_norm=True,
             )
         )
-        self.model.forward = self.forward  #  to get cross attentions and utilize `generate` function
+        self.model.forward = self.forward  # to get cross attentions and utilize `generate` function
 
         self.model.config.is_encoder_decoder = True  # to get cross-attention
         self.add_special_tokens(["<sep/>"])  # <sep/> is used for representing a list in a JSON
@@ -316,134 +463,6 @@ class BARTDecoder(nn.Module):
             )
         return weight
 
-    def batch_custom_decode(
-        self,
-        sequences: Union[List[int], List[List[int]], "np.ndarray", "torch.Tensor"],
-        confidences: Union[List[float], List[List[float]], "np.ndarray"],
-        decoder_delim: str,
-        skip_special_tokens: bool = False,
-        clean_up_tokenization_spaces: bool = True,
-        **kwargs
-    ) -> List[str]:
-        """
-        Convert a list of lists of token ids into a list of strings by calling decode.
-        Args:
-            sequences (`Union[List[int], List[List[int]], np.ndarray, torch.Tensor, tf.Tensor]`):
-                List of tokenized input ids. Can be obtained using the `__call__` method.
-            confidences (`Union[List[float], List[List[float]], np.ndarray]`):
-                List of confidence scores for corresponding tokens in sequences list
-            decoder_delim ('str'):
-                delimiter for the decoded tokens, must q unique token that should not appear in text
-            skip_special_tokens (`bool`, *optional*, defaults to `False`):
-                Whether or not to remove special tokens in the decoding.
-            clean_up_tokenization_spaces (`bool`, *optional*, defaults to `True`):
-                Whether or not to clean up the tokenization spaces.
-            kwargs (additional keyword arguments, *optional*):
-                Will be passed to the underlying model specific decode method.
-        Returns:
-            `List[str]`: The list of decoded sentences.
-        """
-        self.DELIM = decoder_delim
-        return [
-            self.custom_decode(
-                seq,
-                conf,
-                skip_special_tokens=skip_special_tokens,
-                clean_up_tokenization_spaces=clean_up_tokenization_spaces,
-                **kwargs,
-            )
-            for seq, conf in zip(sequences, confidences)
-        ]
-
-    def custom_decode(
-        self,
-        token_ids: Union[int, List[int], "np.ndarray", "torch.Tensor"],
-        token_confs: Union[int, List[float], "np.ndarray"],
-        skip_special_tokens: bool = False,
-        clean_up_tokenization_spaces: bool = True,
-        **kwargs
-    ) -> str:
-        """
-        Converts a sequence of ids in a string, using the tokenizer and vocabulary with options to remove special
-        tokens and clean up tokenization spaces.
-        Similar to doing `self.convert_tokens_to_string(self.convert_ids_to_tokens(token_ids))`.
-        Args:
-            token_ids (`Union[int, List[int], np.ndarray, torch.Tensor, tf.Tensor]`):
-                List of tokenized input ids. Can be obtained using the `__call__` method.
-            token_confs (`Union[float, List[float], np.ndarray]`):
-                List of confidence scores for corresponding tokens
-            skip_special_tokens (`bool`, *optional*, defaults to `False`):
-                Whether or not to remove special tokens in the decoding.
-            clean_up_tokenization_spaces (`bool`, *optional*, defaults to `True`):
-                Whether or not to clean up the tokenization spaces.
-            kwargs (additional keyword arguments, *optional*):
-                Will be passed to the underlying model specific decode method.
-        Returns:
-            `str`: The decoded sentence.
-        """
-        # Convert inputs to python lists
-        token_ids = to_py_obj(token_ids)
-        token_confs = to_py_obj(token_confs)
-
-        return self._custom_decode(
-            token_ids=token_ids,
-            token_confs=token_confs,
-            skip_special_tokens=skip_special_tokens,
-            clean_up_tokenization_spaces=clean_up_tokenization_spaces,
-            **kwargs,
-        )
-
-    def _custom_decode(
-        self,
-        token_ids: List[int],
-        token_confs: List[float],
-        skip_special_tokens: bool = False,
-        clean_up_tokenization_spaces: bool = True,
-        spaces_between_special_tokens: bool = True,
-        **kwargs
-    ) -> str:
-        self._decode_use_source_tokenizer = kwargs.pop("use_source_tokenizer", False)
-
-        filtered_tokens = self.tokenizer.convert_ids_to_tokens(token_ids, skip_special_tokens=skip_special_tokens)
-
-        # To avoid mixing byte-level and unicode for byte-level BPT
-        # we need to build string separately for added tokens and byte-level tokens
-        # cf. https://github.com/huggingface/transformers/issues/1133
-        sub_texts = []
-        sub_confs = []
-        current_sub_text = []
-        current_sub_confs = []
-
-        for token, conf in zip(filtered_tokens, token_confs):
-            if skip_special_tokens and token in self.tokenizer.all_special_ids:
-                continue
-            if token in self.tokenizer.added_tokens_encoder:
-                if current_sub_text:
-                    sub_texts.append(self.tokenizer.convert_tokens_to_string(current_sub_text))
-                    current_sub_text = []
-                    sub_confs.append(sum(current_sub_confs) / len(current_sub_confs))
-                    current_sub_confs = []
-                sub_texts.append(token)
-                sub_confs.append(conf)
-            else:
-                current_sub_text.append(token)
-                current_sub_confs.append(conf)
-        if current_sub_text:
-            sub_texts.append(self.tokenizer.convert_tokens_to_string(current_sub_text))
-            sub_confs.append(sum(current_sub_confs) / len(current_sub_confs))
-
-        decoder_output_confs = sub_confs
-        if spaces_between_special_tokens:
-            text = self.DELIM.join(sub_texts)
-        else:
-            text = "".join(sub_texts)
-
-        if clean_up_tokenization_spaces:
-            clean_text = self.tokenizer.clean_up_tokenization(text)
-            return clean_text, decoder_output_confs
-        else:
-            return text, decoder_output_confs
-
 
 class DonutConfig(PretrainedConfig):
     r"""
@@ -546,6 +565,8 @@ class DonutModel(PreTrainedModel):
         image_tensors: Optional[torch.Tensor] = None,
         prompt_tensors: Optional[torch.Tensor] = None,
         return_json: bool = True,
+        return_confs: bool = True,
+        return_tokens: bool = False,
         return_attentions: bool = False,
     ):
         """
@@ -612,21 +633,30 @@ class DonutModel(PreTrainedModel):
         decoder_output_confs = [np.concatenate([decoder_output_confs, [1.]], axis=0)]
 
         output = {"predictions": list()}
+        self.return_tokens = return_tokens
+        self.return_confs = return_confs
         self.DELIM = "}~}~}~{"  # important, use a DELIM that has a very low prob of appearing in text
 
-        for seq, confs in self.decoder.batch_custom_decode(decoder_output.sequences, decoder_output_confs, self.DELIM):
+        for idx, (seq, confs, idxs) in enumerate(self.decoder.tokenizer.batch_decode(decoder_output.sequences, decoder_output_confs, self.DELIM)):
             eos_tkn, pad_tkn = self.decoder.tokenizer.eos_token, self.decoder.tokenizer.pad_token
             split_seq = [tkn for tkn in seq.split(self.DELIM) if tkn]
             confs = [confs[i] for i, tkn in enumerate(split_seq)
                      if not(tkn.strip().lower() == eos_tkn.lower() or tkn.strip().lower() == pad_tkn.lower())]
+            idxs = [idxs[i] for i, tkn in enumerate(seq.split(self.DELIM))
+                    if not(re.search(eos_tkn, tkn, re.IGNORECASE) or re.search(pad_tkn, tkn, re.IGNORECASE))]
             seq = seq.replace(eos_tkn, "").replace(pad_tkn, "")
             for i, tkn in enumerate(seq.split(self.DELIM)):
                 if re.search(r"<.*?>", tkn, re.IGNORECASE):  # remove first task start token conf
                     confs.pop(i)
+                    idxs.pop(i)
                     break
             seq = re.sub(r"<.*?>", "", seq, count=1).strip(self.DELIM)  # remove first task start token
             if return_json:
-                output["predictions"].append(self.token2json_with_confs(seq, confs, delim=self.DELIM))
+                if return_confs or return_tokens:
+                    output["predictions"].append(self.token2json_with_confs(seq, confs, idxs, delim=self.DELIM))
+                else:
+                    seq = seq.replace(self.DELIM, ' ')
+                    output["predictions"].append(self.token2json(seq))
             else:
                 output["predictions"].append(seq)
 
@@ -721,10 +751,9 @@ class DonutModel(PreTrainedModel):
         else:
             return [] if is_inner_value else {"text_sequence": tokens}
 
-    def token2json_with_confs(self, tokens: str, confs: List[float], delim: str, is_inner_val: bool = False) -> List[dict]:
+    def token2json_with_confs(self, tokens: str, confs: List[float], idxs: List[list], delim: str, is_inner_val: bool = False) -> List[str]:
         """
         Convert a (generated) token sequence into an ordered JSON format
-        confs is a list of confidences for each token separated by delim
         """
         output = dict()
 
@@ -736,15 +765,17 @@ class DonutModel(PreTrainedModel):
             end_token = re.search(fr"</s_{key}>", tokens, re.IGNORECASE)
             start_token = start_token.group()
             tokens_split = [tkn for tkn in tokens.split(delim) if tkn]
-            assert len(tokens_split) == len(confs)
+            assert len(tokens_split) == len(confs) == len(idxs)
 
             if end_token is None:
-                # remove all occurences of start_token idxes from confs list
+                # remove all occurences of start_token idxes from confs list and idxs list
                 confs = [confs[i] for i, tkn in enumerate(tokens_split)
                          if not re.search(start_token, tkn, re.IGNORECASE)]
+                idxs = [idxs[i] for i, tkn in enumerate(tokens_split)
+                        if not re.search(start_token, tkn, re.IGNORECASE)]
                 tokens = tokens.replace(start_token, "")
                 tksplit = [tk for tk in tokens.split(delim) if tk]
-                assert len(tksplit) == len(confs)
+                assert len(tksplit) == len(confs) == len(idxs)
             else:
                 end_token = end_token.group()
                 start_token_escaped = re.escape(start_token)
@@ -764,13 +795,14 @@ class DonutModel(PreTrainedModel):
                     content = content.group(1).strip(delim)
                     tksplit = [tk for tk in tokens.split(delim) if tk]
                     content_confs = confs[start_tkn_esc_idx + 1: end_tkn_esc_idx]
+                    content_idxs = idxs[start_tkn_esc_idx + 1: end_tkn_esc_idx]
                     cntsplit = [tk for tk in content.split(delim) if tk]
 
-                    assert len(tokens_split) == len(confs)
-                    assert len(cntsplit) == len(content_confs)
+                    assert len(tokens_split) == len(confs) == len(idxs)
+                    assert len(cntsplit) == len(content_confs) == len(content_idxs)
 
                     if r"<s_" in content and r"</s_" in content:  # non-leaf node
-                        value = self.token2json_with_confs(content, content_confs, delim, is_inner_val=True)
+                        value = self.token2json_with_confs(content, content_confs, content_idxs, delim, is_inner_val=True)
                         if value:
                             if len(value) == 1:
                                 value = value[0]
@@ -779,6 +811,8 @@ class DonutModel(PreTrainedModel):
                         output[key] = []
                         leaf_content_confs = [content_confs[i] for i, tkn in enumerate(cntsplit)
                                               if not(re.search(r"<sep/>", tkn, re.IGNORECASE))]
+                        leaf_content_idxs = [content_idxs[i] for i, tkn in enumerate(cntsplit)
+                                             if not(re.search(r"<sep/>", tkn, re.IGNORECASE))]
                         for leaf_i, leaf in enumerate(content.split(r"<sep/>")):
                             leaf = leaf.strip(delim)
                             if (
@@ -787,16 +821,24 @@ class DonutModel(PreTrainedModel):
                                 and leaf[-2:] == "/>"
                             ):
                                 leaf = leaf[1:-2]  # for categorical special tokens
-                            output[key].append([leaf.replace(self.DELIM, ' '), leaf_content_confs[leaf_i]])
+                            if self.return_confs and self.return_tokens:
+                                output[key].append([leaf, leaf_content_confs[leaf_i], leaf_content_idxs[leaf_i]])
+                            elif self.return_confs:
+                                output[key].append([leaf, leaf_content_confs[leaf_i]])
+                            elif self.return_tokens:
+                                output[key].append([leaf, leaf_content_idxs[leaf_i]])
+                            else:
+                                output[key].append(leaf)
                         if len(output[key]) == 1:
                             output[key] = output[key][0]
                 for i, tkn in enumerate(tokens_split):
                     if re.search(end_token, tkn, re.IGNORECASE):
                         confs = confs[i + 1:]
+                        idxs = idxs[i + 1:]
                         break
                 tokens = tokens[tokens.find(end_token) + len(end_token):].strip(delim)
                 if tokens[:6] == r"<sep/>":  # non-leaf nodes
-                    return [output] + self.token2json_with_confs(tokens[6:], confs[1:], delim, is_inner_val=True)
+                    return [output] + self.token2json_with_confs(tokens[6:], confs[1:], idxs[1:], delim, is_inner_val=True)
         if len(output):
             return [output] if is_inner_val else output
         else:

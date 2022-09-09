@@ -11,13 +11,12 @@ import torch
 from donut import DonutModel, DonutModelCustom
 
 
-model_path = "/home/ss3/donut/result/donut_finetuned_models/experiment_7k_ver1_lr2e5_60ep"
-model_path = "/home/ss3/donut/result/donut_finetuned_models/experiment_2k_ver2_lr2e5_500epoch"
-model_path = "/home/ss3/donut/result/donut_finetuned_models/experiment_7k_ver1_lr2e5_500epoch"
+model_path = "result/donut_finetuned_models/experiment_2k_ver2_lr2e5_500epoch"
+model_path = "result/donut_finetuned_models/experiment_7k_ver1_lr2e5_500epoch"
 custom_model = True
 
 if custom_model:
-    mdoel = DonutModelCustom.from_pretrained(model_path)
+    model = DonutModelCustom.from_pretrained(model_path)
 else:
     model = DonutModel.from_pretrained(model_path)
 
@@ -50,7 +49,7 @@ for img_path in tqdm(img_paths):
     else:
         print(f"{img_path} not recognized as an image or pdf file")
         continue
-    output = model.inference(image=image, prompt="<s_iitcdip>")
+    output = model.inference(image=image, prompt="<s_converted_cdip_donut_7k_ver1>")
     print(img_path)
     pp(output)
 

@@ -15,7 +15,7 @@ model_path = "result/train_wildreceipts/20220829_170720"  # no bbox in items
 custom_model = True
 
 if custom_model:
-    mdoel = DonutModelCustom.from_pretrained(model_path)
+    model = DonutModelCustom.from_pretrained(model_path)
 else:
     model = DonutModel.from_pretrained(model_path)
 
