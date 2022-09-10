@@ -643,7 +643,7 @@ class DonutModel(PreTrainedModel):
             confs = [confs[i] for i, tkn in enumerate(split_seq)
                      if not(tkn.strip().lower() == eos_tkn.lower() or tkn.strip().lower() == pad_tkn.lower())]
             idxs = [idxs[i] for i, tkn in enumerate(seq.split(self.DELIM))
-                    if not(re.search(eos_tkn, tkn, re.IGNORECASE) or re.search(pad_tkn, tkn, re.IGNORECASE))]
+                    if not(tkn.strip().lower() == eos_tkn.lower() or tkn.strip().lower() == pad_tkn.lower())]
             seq = seq.replace(eos_tkn, "").replace(pad_tkn, "")
             for i, tkn in enumerate(seq.split(self.DELIM)):
                 if re.search(r"<.*?>", tkn, re.IGNORECASE):  # remove first task start token conf
@@ -651,7 +651,7 @@ class DonutModel(PreTrainedModel):
                     idxs.pop(i)
                     break
             seq = re.sub(r"<.*?>", "", seq, count=1).strip(self.DELIM)  # remove first task start token
-            if return_json:
+            if confs and idxs and return_json:
                 if return_confs or return_tokens:
                     output["predictions"].append(self.token2json_with_confs(seq, confs, idxs, delim=self.DELIM))
                 else:
