@@ -6,14 +6,15 @@ MIT License
 import math
 import os
 import re
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional, Tuple, Union
 
-import numpy as np
+import cv2
 import PIL
 import timm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from PIL import ImageOps
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.models.swin_transformer import SwinTransformer
@@ -558,6 +559,82 @@ class DonutModel(PreTrainedModel):
         )
         return decoder_outputs
 
+    @staticmethod
+    def apply_fusion(
+        fusion_mode: str,
+        unfused_tensor:
+        torch.Tensor, dim: int
+    ) -> torch.Tensor:
+        # for donut
+        # decoder num attention-head = 16, decoder num layers = 4
+        # len(decoder_output.cross_attentions[0]) = 4
+        # decoder_output.cross_attentions[0][0].shape = torch.Size([1, 16, 1, 1200])
+        if fusion_mode == "mean":
+            fused_tensor = torch.mean(unfused_tensor, dim=dim)
+        elif fusion_mode == "max":
+            fused_tensor = torch.max(unfused_tensor, dim=dim)[0]
+        elif fusion_mode == "min":
+            fused_tensor = torch.min(unfused_tensor, dim=dim)[0]
+        else:
+            raise NotImplementedError(f"{fusion_mode} fusion not supported")
+        return fused_tensor
+
+    @staticmethod
+    def max_bbox_from_heatmap(
+        decoder_cross_attentions: torch.Tensor,
+        tkn_indexes: List[int],
+        final_h: int = 1280,
+        final_w: int = 960,
+        heatmap_h: int = 40,
+        heatmap_w: int = 30,
+        return_thres_agg_heatmap: bool = False
+    ) -> Union[Tuple[int, int, int, int], Tuple[Tuple[int, int, int, int], np.ndarray]]:
+        """
+        decoder_cross_attention: tuple(tuple(torch.FloatTensor))
+        Tuple (one element for each generated token) of tuples (one element for each layer of the decoder) of
+         `torch.FloatTensor` of shape `(batch_size, num_heads, generated_length, sequence_length)`
+        """
+        agg_heatmap = np.zeros([final_h, final_w], dtype=np.uint8)
+        head_fusion_type = ["mean", "max", "min"][1]
+        layer_fusion_type = ["mean", "max", "min"][1]
+
+        for tidx in tkn_indexes:
+            hmaps = torch.stack(decoder_cross_attentions[tidx], dim=0)
+            # shape [4, 1, 16, 1, 1200]->[4, 16, 1200]
+            hmaps = hmaps.permute(1, 3, 0, 2, 4).squeeze(0)
+            hmaps = hmaps[-1]
+            # change shape [4, 16, 1200]->[4, 16, 40, 30] assuming (heatmap_h, heatmap_w) = (40, 30)
+            hmaps = hmaps.view(4, 16, heatmap_h, heatmap_w)
+            # fusing 16 decoder attention heads i.e. [4, 16, 40, 30]-> [16, 40, 30]
+            hmaps = DonutModel.apply_fusion(head_fusion_type, hmaps, dim=1)
+            # fusing 4 decoder layers from BART i.e. [16, 40, 30]-> [40, 30]
+            hmap = DonutModel.apply_fusion(layer_fusion_type, hmaps, dim=0)
+
+            # dropping discard ratio activations
+            flat = hmap.view(heatmap_h * heatmap_w)
+            discard_ratio = 0.999
+            _, indices = flat.topk(int(flat.size(-1) * discard_ratio), largest=False)
+            flat[indices] = 0
+            hmap = flat.view(heatmap_h, heatmap_w)
+
+            hmap = hmap.unsqueeze(dim=-1).cpu().numpy()
+            hmap = (hmap * 255.).astype(np.uint8)  # (40, 30, 1) uint8
+            # fuse heatmaps for different tokens by taking the max
+            agg_heatmap = np.max(np.asarray([agg_heatmap, cv2.resize(hmap, (final_w, final_h))]), axis=0).astype(np.uint8)
+
+        # threshold to remove small attention pockets
+        thres_heatmap = cv2.threshold(agg_heatmap, 200, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        # Find contours
+        contours = cv2.findContours(thres_heatmap, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = contours[0] if len(contours) == 2 else contours[1]
+        bboxes = [cv2.boundingRect(ctr) for ctr in contours]
+        # return box with max area
+        x, y, w, h = max(bboxes, key=lambda box: box[2] * box[3])
+        max_area_box = [x, y, x + w, y + h]
+        if return_thres_agg_heatmap:
+            return max_area_box, thres_heatmap, agg_heatmap
+        return max_area_box
+
     def inference(
         self,
         image: PIL.Image = None,
@@ -568,6 +645,9 @@ class DonutModel(PreTrainedModel):
         return_confs: bool = True,
         return_tokens: bool = False,
         return_attentions: bool = False,
+        return_max_bbox: bool = False,
+        nested_list_set: set = {"Items"},
+        nested_dict_set: set = {"terms", "total", "shipto", "customer", "vendor", "invoice"}
     ):
         """
         Generate a token sequence in an auto-regressive manner,
@@ -580,6 +660,8 @@ class DonutModel(PreTrainedModel):
                 convert prompt to tensor if image_tensor is not fed
             prompt_tensors: (1, sequence_length)
                 convert image to tensor if prompt_tensor is not fed
+            nested_list_set: Fields that are nested lists of dicts
+            nested_dict_set: Fields that are nested dicts
         """
         # prepare backbone inputs (image and prompt)
         if image is None and image_tensors is None:
@@ -665,6 +747,43 @@ class DonutModel(PreTrainedModel):
                 "self_attentions": decoder_output.decoder_attentions,
                 "cross_attentions": decoder_output.cross_attentions,
             }
+        if return_max_bbox and return_confs and return_tokens:
+            preds_with_max_bbox = []
+            for pred_obj in output["predictions"]:
+                temp_pred_obj = {}
+                for top_key, top_val in pred_obj.items():
+                    if top_key in nested_list_set:
+                        temp_pred_obj[top_key] = []
+                        for item in top_val:
+                            temp_item_obj = {}
+                            for item_key, item_val in item.items():
+                                text, conf, tokens = item_val
+                                max_bbox = DonutModel.max_bbox_from_heatmap(
+                                    decoder_cross_attentions=decoder_output.cross_attentions,
+                                    tkn_indexes=tokens, final_h=1280, final_w=960
+                                )
+                                temp_item_obj[item_key] = [text, conf, tokens, max_bbox]
+                            temp_pred_obj[top_key].append(temp_item_obj)
+                    elif top_key in nested_dict_set:
+                        temp_item_obj = {}
+                        for sub_key, sub_val in top_val.items():
+                            text, conf, tokens = sub_val
+                            max_bbox = DonutModel.max_bbox_from_heatmap(
+                                decoder_cross_attentions=decoder_output.cross_attentions,
+                                tkn_indexes=tokens, final_h=1280, final_w=960
+                            )
+                            temp_item_obj[sub_key] = [text, conf, tokens, max_bbox]
+                        temp_pred_obj[top_key] = temp_item_obj
+                    else:
+                        text, conf, tokens = top_val
+                        max_bbox = DonutModel.max_bbox_from_heatmap(
+                            decoder_cross_attentions=decoder_output.cross_attentions,
+                            tkn_indexes=tokens, final_h=1280, final_w=960
+                        )
+                        temp_pred_obj[top_key] = [text, conf, tokens, max_bbox]
+                preds_with_max_bbox.append(temp_pred_obj)
+
+            output["predictions"] = preds_with_max_bbox
 
         return output
 
@@ -821,14 +940,15 @@ class DonutModel(PreTrainedModel):
                                 and leaf[-2:] == "/>"
                             ):
                                 leaf = leaf[1:-2]  # for categorical special tokens
-                            if self.return_confs and self.return_tokens:
-                                output[key].append([leaf, leaf_content_confs[leaf_i], leaf_content_idxs[leaf_i]])
-                            elif self.return_confs:
-                                output[key].append([leaf, leaf_content_confs[leaf_i]])
-                            elif self.return_tokens:
-                                output[key].append([leaf, leaf_content_idxs[leaf_i]])
-                            else:
-                                output[key].append(leaf)
+                            if leaf:
+                                if self.return_confs and self.return_tokens:
+                                    output[key].append([leaf, leaf_content_confs[leaf_i], leaf_content_idxs[leaf_i]])
+                                elif self.return_confs:
+                                    output[key].append([leaf, leaf_content_confs[leaf_i]])
+                                elif self.return_tokens:
+                                    output[key].append([leaf, leaf_content_idxs[leaf_i]])
+                                else:
+                                    output[key].append(leaf)
                         if len(output[key]) == 1:
                             output[key] = output[key][0]
                 for i, tkn in enumerate(tokens_split):
