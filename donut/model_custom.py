@@ -612,7 +612,7 @@ class DonutModel(PreTrainedModel):
 
             # dropping discard ratio activations
             flat = hmap.view(heatmap_h * heatmap_w)
-            discard_ratio = 0.999
+            discard_ratio = 0.99
             _, indices = flat.topk(int(flat.size(-1) * discard_ratio), largest=False)
             flat[indices] = 0
             hmap = flat.view(heatmap_h, heatmap_w)
