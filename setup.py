@@ -50,7 +50,7 @@ setup(
     ),
     python_requires=">=3.7",
     install_requires=[
-        "transformers==4.21.1",
+        "transformers>=4.21.1",
         "timm",
         "datasets[vision]",
         "pytorch-lightning>=1.6.4",
@@ -58,6 +58,7 @@ setup(
         "sentencepiece",
         "zss",
         "sconf>=0.2.3",
+        "opencv-python>=4.6.0.66",
     ],
     classifiers=[
         "Intended Audience :: Developers",
