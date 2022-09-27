@@ -11,8 +11,7 @@ import torch
 from donut import DonutModel, DonutModelCustom
 
 
-model_path = "result/donut_finetuned_models/experiment_2k_ver2_lr2e5_500epoch"
-model_path = "result/donut_finetuned_models/experiment_7k_ver1_lr2e5_500epoch"
+model_path = "result/donut_finetuned_models/experiment1"
 custom_model = True
 
 if custom_model:
@@ -32,7 +31,7 @@ img_ext = {".jpg", ".jpeg", ".JPEG", ".png", ".PNG"}
 pdf_ext = {".pdf", ".PDF"}
 valid_ext = img_ext | pdf_ext
 
-src_dir = "dataset/scanned_invoice"
+src_dir = "dataset/invoice"
 img_paths = glob.glob(os.path.join(src_dir, "**/*.*"), recursive=True)
 dest_dir = os.path.join(src_dir, f"json_{model_path.rstrip('/').split('/')[-1]}")
 os.makedirs(dest_dir, exist_ok=True)
@@ -49,7 +48,7 @@ for img_path in tqdm(img_paths):
     else:
         print(f"{img_path} not recognized as an image or pdf file")
         continue
-    output = model.inference(image=image, prompt="<s_converted_cdip_donut_7k_ver1>")
+    output = model.inference(image=image, prompt="<s_invoice>")
     print(img_path)
     pp(output)
 
