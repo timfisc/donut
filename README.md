@@ -16,11 +16,11 @@ Official Implementation of Donut and SynthDoG | [Paper](https://arxiv.org/abs/21
 ## Introduction
 
 **Donut** 🍩, **Do**cume**n**t **u**nderstanding **t**ransformer, is a new method of document understanding that utilizes an OCR-free end-to-end Transformer model. Donut does not require off-the-shelf OCR engines/APIs, yet it shows state-of-the-art performances on various visual document understanding tasks, such as visual document classification or information extraction (a.k.a. document parsing). 
-In addition, we present **SynthDoG** 🐶, **Synth**etic **Do**cument **G**enerator, that helps the model pre-training to be flexible on vairous languages and domains.
+In addition, we present **SynthDoG** 🐶, **Synth**etic **Do**cument **G**enerator, that helps the model pre-training to be flexible on various languages and domains.
 
 Our academic paper, which describes our method in detail and provides full experimental results and analyses, can be found here:<br>
 > [**OCR-free Document Understanding Transformer**](https://arxiv.org/abs/2111.15664).<br>
-> [Geewook Kim](https://geewook.kim), [Teakgyu Hong](https://dblp.org/pid/183/0952.html), [Moonbin Yim](https://github.com/moonbings), [JeongYeon Nam](https://github.com/long8v), [Jinyoung Park](https://github.com/jyp1111), [Jinyeong Yim](https://jinyeong.github.io), [Wonseok Hwang](https://scholar.google.com/citations?user=M13_WdcAAAAJ), [Sangdoo Yun](https://sangdooyun.github.io), [Dongyoon Han](https://dongyoonhan.github.io), [Seunghyun Park](https://scholar.google.com/citations?user=iowjmTwAAAAJ). To appear at ECCV 2022.
+> [Geewook Kim](https://geewook.kim), [Teakgyu Hong](https://dblp.org/pid/183/0952.html), [Moonbin Yim](https://github.com/moonbings), [JeongYeon Nam](https://github.com/long8v), [Jinyoung Park](https://github.com/jyp1111), [Jinyeong Yim](https://jinyeong.github.io), [Wonseok Hwang](https://scholar.google.com/citations?user=M13_WdcAAAAJ), [Sangdoo Yun](https://sangdooyun.github.io), [Dongyoon Han](https://dongyoonhan.github.io), [Seunghyun Park](https://scholar.google.com/citations?user=iowjmTwAAAAJ). In ECCV 2022.
 
 <img width="946" alt="image" src="misc/overview.png">
 
@@ -61,7 +61,7 @@ To generate synthetic datasets with our SynthDoG, please see `./synthdog/README.
 
 ## Updates
 
-**_2022-10-05_** New version 1.0.8 is released (`pip install donut-python --upgrade`). See [1.0.8 Release Notes](https://github.com/clovaai/donut/releases/tag/1.0.8).<br>
+**_2022-11-14_** New version 1.0.9 is released (`pip install donut-python --upgrade`). See [1.0.9 Release Notes](https://github.com/clovaai/donut/releases/tag/1.0.9).<br>
 **_2022-08-12_** Donut 🍩 is also available at [huggingface/transformers 🤗](https://huggingface.co/docs/transformers/main/en/model_doc/donut) (contributed by [@NielsRogge](https://github.com/NielsRogge)). `donut-python` loads the pre-trained weights from the `official` branch of the model repositories. See [1.0.5 Release Notes](https://github.com/clovaai/donut/releases/tag/1.0.5).<br>
 **_2022-08-05_** A well-executed hands-on tutorial on donut 🍩 is published at [Towards Data Science](https://towardsdatascience.com/ocr-free-document-understanding-with-donut-1acfbdf099be) (written by [@estaudere](https://github.com/estaudere)).<br>
 **_2022-07-20_** First Commit, We release our code, model weights, synthetic data and generator.
@@ -147,7 +147,7 @@ The `gt_parses` follows the format of `[{"question" : {question_sentence}, "answ
 - Google colab demo is available [here](https://colab.research.google.com/drive/1Z4WG8Wunj3HE0CERjt608ALSgSzRC9ig?usp=sharing).
 - Gradio web demo is available [here](https://huggingface.co/spaces/nielsr/donut-docvqa).
 
-#### For (Psuedo) Text Reading Task
+#### For (Pseudo) Text Reading Task
 The `gt_parse` looks like `{"text_sequence" : "word1 word2 word3 ... "}`
 - This task is also a pre-training task of Donut model.
 - You can use our **SynthDoG** 🐶 to generate synthetic images for the text reading task with proper `gt_parse`. See `./synthdog/README.md` for details.
@@ -202,12 +202,12 @@ Some important arguments:
 
 ## How to Cite
 If you find this work useful to you, please cite:
-```
-@article{kim2021donut,
-   title={OCR-free Document Understanding Transformer},
-   author={Kim, Geewook and Hong, Teakgyu and Yim, Moonbin and Nam, JeongYeon and Park, Jinyoung and Yim, Jinyeong and Hwang, Wonseok and Yun, Sangdoo and Han, Dongyoon and Park, Seunghyun},
-   journal={arXiv preprint arXiv:2111.15664},
-   year={2021}
+```bibtex
+@inproceedings{kim2022donut,
+  title     = {OCR-Free Document Understanding Transformer},
+  author    = {Kim, Geewook and Hong, Teakgyu and Yim, Moonbin and Nam, JeongYeon and Park, Jinyoung and Yim, Jinyeong and Hwang, Wonseok and Yun, Sangdoo and Han, Dongyoon and Park, Seunghyun},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  year      = {2022}
 }
 ```
 
