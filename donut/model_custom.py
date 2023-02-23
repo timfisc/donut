@@ -355,7 +355,7 @@ class BARTDecoder(nn.Module):
         if newly_added_num > 0:
             self.model.resize_token_embeddings(len(self.tokenizer))
 
-    def prepare_inputs_for_inference(self, input_ids: torch.Tensor, past=None, use_cache: bool = None, encoder_outputs: torch.Tensor = None):
+    def prepare_inputs_for_inference(self, input_ids: torch.Tensor, past_key_values=None, use_cache: bool = None, encoder_outputs: torch.Tensor = None):
         """
         Args:
             input_ids: (batch_size, sequence_lenth)
@@ -365,12 +365,12 @@ class BARTDecoder(nn.Module):
             encoder_hidden_states: (batch_size, sequence_length, embedding_dim)
         """
         attention_mask = input_ids.ne(self.tokenizer.pad_token_id).long()
-        if past is not None:
+        if past_key_values is not None:
             input_ids = input_ids[:, -1:]
         output = {
             "input_ids": input_ids,
             "attention_mask": attention_mask,
-            "past_key_values": past,
+            "past_key_values": past_key_values,
             "use_cache": use_cache,
             "encoder_hidden_states": encoder_outputs.last_hidden_state,
         }
